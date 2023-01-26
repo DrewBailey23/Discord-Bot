@@ -11,12 +11,7 @@ import valorant
 import mysql.connector
 from pytz import timezone
 import time
-TOKEN = 'MTAyMjI3ODY5NTk3MDQyMjg1NA.GHItAf.vCLxx92sJQ4n2zw2CzmyT-XIJUPjYPJk3e6lf4'
-##MySQL Database Variables
-USER = 'u82120_m5IEJEMcxY'
-PASSWORD = 'weIKW@+gP3nSm+.zzHIT+C+x'
-HOST = '78.108.218.47'
-DATABASE = 's82120_DiscordDatabase'
+
 
 ##-----------------------------------------------------------Bot Object-------------------------------------------------------------------------------
 class PersistentViewBot(commands.Bot):
