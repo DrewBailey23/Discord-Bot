@@ -231,8 +231,8 @@ async def command(interaction:discord.Interaction):
 
 @bot.tree.command(name = "leaderboard", description = "Displays the leaderboard for this server.")
 async def leaderboard(interaction:discord.Interaction):
-  con = mysql.connector.connect(user = 'u82120_m5IEJEMcxY', password = 'weIKW@+gP3nSm+.zzHIT+C+x', 
-                             host = '78.108.218.47', database = 's82120_DiscordDatabase') 
+  con = mysql.connector.connect(user = USER, password = PASSWORD, 
+                             host = HOST, database = DATABASE) 
   query = (f"select * from userinfo where guild_id = {interaction.guild_id} order by points desc")
   cursor = con.cursor()
   cursor.execute(query)
@@ -344,8 +344,8 @@ async def post_roles(interaction:discord.Interaction):
 
 @bot.tree.command(name = "mute", description = "Prevents the bot from notifying you when you level up.")
 async def mute(interaction:discord.Interaction):
-  con = mysql.connector.connect(user = 'u82120_m5IEJEMcxY', password = 'weIKW@+gP3nSm+.zzHIT+C+x', 
-                             host = '78.108.218.47', database = 's82120_DiscordDatabase') 
+  con = mysql.connector.connect(user = USER, password = PASSWORD, 
+                             host = HOST, database = DATABASE) 
   cursor = con.cursor()
   query = f"update userinfo set notification = false where unique_id = \"{interaction.user.id}/{interaction.guild_id}\""
   cursor.execute(query)
