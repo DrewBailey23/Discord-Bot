@@ -10,7 +10,7 @@ import overwatch
 import valorant
 import mysql.connector
 from pytz import timezone
-import time
+
 USER = ##MySQL User string
 PASSWORD = ##MySQL password string
 HOST = ##MySQL host string
