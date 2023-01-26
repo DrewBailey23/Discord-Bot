@@ -65,10 +65,14 @@ bot = PersistentViewBot()
 @app_commands.describe(title = "The title of your poll.")
 @app_commands.describe(option_one = "The first option on your poll")
 @app_commands.describe(option_two = "The second option on your poll")
+@app_commands.describe(option_three = "The third (optional) option of your poll.")
 @app_commands.describe(group_mention = "Allows you to optionally mention either @here or @everyone")
 @app_commands.choices(group_mention = [discord.app_commands.Choice(name = "@everyone", value = "@everyone"), discord.app_commands.Choice(name = "@here", value = "@here")])
-async def poll(interaction:discord.Interaction, title:str, option_one:str, option_two:str, group_mention:discord.app_commands.Choice[str] = ""):
-  view = twoPollButtons(title, option_one, option_two, interaction.user)
+async def poll(interaction:discord.Interaction, title:str, option_one:str, option_two:str, option_three:str = "",group_mention:discord.app_commands.Choice[str] = ""):
+  if option_three.__eq__(""):
+    view = twoPollButtons(title, option_one, option_two, interaction.user)
+  else:
+    view = threePollButtons(title, option_one, option_two, option_three, interaction.user)
   await interaction.response.send_message(group_mention, embed = view.embed, view = view)
 
 
@@ -231,8 +235,8 @@ async def command(interaction:discord.Interaction):
 
 @bot.tree.command(name = "leaderboard", description = "Displays the leaderboard for this server.")
 async def leaderboard(interaction:discord.Interaction):
-  con = mysql.connector.connect(user = USER, password = PASSWORD, 
-                             host = HOST, database = DATABASE) 
+  con = mysql.connector.connect(user = 'u82120_m5IEJEMcxY', password = 'weIKW@+gP3nSm+.zzHIT+C+x', 
+                             host = '78.108.218.47', database = 's82120_DiscordDatabase') 
   query = (f"select * from userinfo where guild_id = {interaction.guild_id} order by points desc")
   cursor = con.cursor()
   cursor.execute(query)
@@ -344,8 +348,8 @@ async def post_roles(interaction:discord.Interaction):
 
 @bot.tree.command(name = "mute", description = "Prevents the bot from notifying you when you level up.")
 async def mute(interaction:discord.Interaction):
-  con = mysql.connector.connect(user = USER, password = PASSWORD, 
-                             host = HOST, database = DATABASE) 
+  con = mysql.connector.connect(user = 'u82120_m5IEJEMcxY', password = 'weIKW@+gP3nSm+.zzHIT+C+x', 
+                             host = '78.108.218.47', database = 's82120_DiscordDatabase') 
   cursor = con.cursor()
   query = f"update userinfo set notification = false where unique_id = \"{interaction.user.id}/{interaction.guild_id}\""
   cursor.execute(query)
@@ -959,13 +963,12 @@ class Buttons(discord.ui.View):
     accumulator = 0
     string = ""
     for x in self.sql:
-      string += x[2].ljust(20) + " - {}\n".format(x[5])
+      string += f"{accumulator + 1}. {x[2]} - {x[5]}\n"
       accumulator += 1
-      if accumulator == 10:
+      if accumulator % 10 == 0:
         self.embed_list.append(discord.Embed(title = self.title,
                        description = string,
                        color = discord.Color.red()))
-        accumulator = 1
         string = ""
     if not string .__eq__(""):
         self.embed_list.append(discord.Embed(title = self.title,
@@ -1109,6 +1112,7 @@ class Menu(discord.ui.View): ##Button Object for rock paper scissors
       self.p2_status = True
     await interaction.response.defer()
 
+
 class twoPollButtons(discord.ui.View):
   def __init__(self, title, option1, option2, user):
     super().__init__(timeout = None)
@@ -1169,6 +1173,144 @@ class twoPollButtons(discord.ui.View):
         await interaction.response.edit_message(embed = embed)
         self.option_two_list.append(interaction.user.id)
         self.option_one_list.remove(interaction.user.id)
+        self.embed = embed
+    else:
+      await interaction.response.defer()
+  @discord.ui.button(label = "Close Poll", style = discord.ButtonStyle.red)
+  async def closebutton(self, interaction:discord.Interaction, button:discord.Button):
+    if interaction.user.__eq__(self.user) and not self.is_closed:
+      self.is_closed = True
+      await interaction.response.send_message(f'{self.user.mention}\'s poll has been finished. Here are the results!', embed = self.embed)
+    else:
+      await interaction.response.defer()
+    
+class threePollButtons(discord.ui.View):
+  def __init__(self, title, option1, option2, option3, user):
+    super().__init__(timeout = None)
+    self.option_one = option1
+    self.option_one_votes = 0
+    self.option_two = option2
+    self.option_two_votes = 0
+    self.option_three = option3
+    self.option_three_votes = 0
+    self.title = title
+    self.embed = discord.Embed(title = title, color = discord.Color.red())
+    self.embed.add_field(name = "Option 1", value = f"{option1}\n\nVotes: 0")
+    self.embed.add_field(name = "Option 2", value = f"{option2}\n\nVotes: 0")
+    self.embed.add_field(name = "Option 3", value = f"{option3}\n\nVotes: 0")
+    self.option_one_list = []
+    self.option_two_list = []
+    self.option_three_list = []
+    self.is_closed = False
+    self.user = user
+  @discord.ui.button(label = "Option 1", style = discord.ButtonStyle.blurple)
+  async def button1(self, interaction:discord.Interaction, button: discord.ui.Button):
+    if not self.is_closed:
+      if interaction.user.id not in self.option_one_list and interaction.user.id not in self.option_two_list and interaction.user.id not in self.option_three_list:
+        self.option_one_votes += 1
+        embed = discord.Embed(title = self.title, color = discord.Color.red())
+        embed.add_field(name = "Option 1", value = f"{self.option_one}\n\nVotes: {self.option_one_votes}")
+        embed.add_field(name = "Option 2", value = f"{self.option_two}\n\nVotes: {self.option_two_votes}")
+        embed.add_field(name = "Option 3", value = f"{self.option_three}\n\nVotes: {self.option_three_votes}")
+        await interaction.response.edit_message(embed = embed)
+        self.option_one_list.append(interaction.user.id)
+      elif interaction.user.id in self.option_one_list:
+        await interaction.response.defer()
+      elif interaction.user.id in self.option_two_list:
+        self.option_one_votes += 1
+        self.option_two_votes -= 1
+        embed = discord.Embed(title = self.title, color = discord.Color.red())
+        embed.add_field(name = "Option 1", value = f"{self.option_one}\n\nVotes: {self.option_one_votes}")
+        embed.add_field(name = "Option 2", value = f"{self.option_two}\n\nVotes: {self.option_two_votes}")
+        embed.add_field(name = "Option 3", value = f"{self.option_three}\n\nVotes: {self.option_three_votes}")
+        await interaction.response.edit_message(embed = embed)
+        self.embed = embed
+        self.option_two_list.remove(interaction.user.id)
+        self.option_one_list.append(interaction.user.id)
+      elif interaction.user.id in self.option_three_list:
+        self.option_one_votes += 1
+        self.option_three_votes -= 1
+        embed = discord.Embed(title = self.title, color = discord.Color.red())
+        embed.add_field(name = "Option 1", value = f"{self.option_one}\n\nVotes: {self.option_one_votes}")
+        embed.add_field(name = "Option 2", value = f"{self.option_two}\n\nVotes: {self.option_two_votes}")
+        embed.add_field(name = "Option 3", value = f"{self.option_three}\n\nVotes: {self.option_three_votes}")
+        await interaction.response.edit_message(embed = embed)
+        self.embed = embed
+        self.option_three_list.remove(interaction.user.id)
+        self.option_one_list.append(interaction.user.id)
+    else:
+      await interaction.response.defer()
+  @discord.ui.button(label = "Option 2", style = discord.ButtonStyle.blurple)
+  async def button2(self, interaction:discord.Interaction, button: discord.ui.Button):
+    if not self.is_closed:
+      if interaction.user.id not in self.option_one_list and interaction.user.id not in self.option_two_list and interaction.user.id not in self.option_three_list:
+        self.option_two_votes += 1
+        embed = discord.Embed(title = self.title, color = discord.Color.red())
+        embed.add_field(name = "Option 1", value = f"{self.option_one}\n\nVotes: {self.option_one_votes}")
+        embed.add_field(name = "Option 2", value = f"{self.option_two}\n\nVotes: {self.option_two_votes}")
+        embed.add_field(name = "Option 3", value = f"{self.option_three}\n\nVotes: {self.option_three_votes}")
+        await interaction.response.edit_message(embed = embed)
+        self.option_two_list.append(interaction.user.id)
+      elif interaction.user.id in self.option_two_list:
+        await interaction.response.defer()
+      elif interaction.user.id in self.option_one_list:
+        self.option_one_votes -= 1
+        self.option_two_votes += 1
+        embed = discord.Embed(title = self.title, color = discord.Color.red())
+        embed.add_field(name = "Option 1", value = f"{self.option_one}\n\nVotes: {self.option_one_votes}")
+        embed.add_field(name = "Option 2", value = f"{self.option_two}\n\nVotes: {self.option_two_votes}")
+        embed.add_field(name = "Option 3", value = f"{self.option_three}\n\nVotes: {self.option_three_votes}")
+        await interaction.response.edit_message(embed = embed)
+        self.option_two_list.append(interaction.user.id)
+        self.option_one_list.remove(interaction.user.id)
+        self.embed = embed
+      elif interaction.user.id in self.option_three_list:
+        self.option_three_votes -= 1
+        self.option_two_votes += 1
+        embed = discord.Embed(title = self.title, color = discord.Color.red())
+        embed.add_field(name = "Option 1", value = f"{self.option_one}\n\nVotes: {self.option_one_votes}")
+        embed.add_field(name = "Option 2", value = f"{self.option_two}\n\nVotes: {self.option_two_votes}")
+        embed.add_field(name = "Option 3", value = f"{self.option_three}\n\nVotes: {self.option_three_votes}")
+        await interaction.response.edit_message(embed = embed)
+        self.option_two_list.append(interaction.user.id)
+        self.option_three_list.remove(interaction.user.id)
+        self.embed = embed
+    else:
+      await interaction.response.defer()
+  @discord.ui.button(label = "Option 3", style = discord.ButtonStyle.blurple)
+  async def button3(self, interaction:discord.Interaction, button: discord.ui.Button):
+    if not self.is_closed:
+      if interaction.user.id not in self.option_one_list and interaction.user.id not in self.option_two_list and interaction.user.id not in self.option_three_list:
+        self.option_three_votes += 1
+        embed = discord.Embed(title = self.title, color = discord.Color.red())
+        embed.add_field(name = "Option 1", value = f"{self.option_one}\n\nVotes: {self.option_one_votes}")
+        embed.add_field(name = "Option 2", value = f"{self.option_two}\n\nVotes: {self.option_two_votes}")
+        embed.add_field(name = "Option 3", value = f"{self.option_three}\n\nVotes: {self.option_three_votes}")
+        await interaction.response.edit_message(embed = embed)
+        self.option_three_list.append(interaction.user.id)
+      elif interaction.user.id in self.option_three_list:
+        await interaction.response.defer()
+      elif interaction.user.id in self.option_one_list:
+        self.option_one_votes -= 1
+        self.option_three_votes += 1
+        embed = discord.Embed(title = self.title, color = discord.Color.red())
+        embed.add_field(name = "Option 1", value = f"{self.option_one}\n\nVotes: {self.option_one_votes}")
+        embed.add_field(name = "Option 2", value = f"{self.option_two}\n\nVotes: {self.option_two_votes}")
+        embed.add_field(name = "Option 3", value = f"{self.option_three}\n\nVotes: {self.option_three_votes}")
+        await interaction.response.edit_message(embed = embed)
+        self.option_three_list.append(interaction.user.id)
+        self.option_one_list.remove(interaction.user.id)
+        self.embed = embed
+      elif interaction.user.id in self.option_two_list:
+        self.option_three_votes += 1
+        self.option_two_votes -= 1
+        embed = discord.Embed(title = self.title, color = discord.Color.red())
+        embed.add_field(name = "Option 1", value = f"{self.option_one}\n\nVotes: {self.option_one_votes}")
+        embed.add_field(name = "Option 2", value = f"{self.option_two}\n\nVotes: {self.option_two_votes}")
+        embed.add_field(name = "Option 3", value = f"{self.option_three}\n\nVotes: {self.option_three_votes}")
+        await interaction.response.edit_message(embed = embed)
+        self.option_three_list.append(interaction.user.id)
+        self.option_two_list.remove(interaction.user.id)
         self.embed = embed
     else:
       await interaction.response.defer()
