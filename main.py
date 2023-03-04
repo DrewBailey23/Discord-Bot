@@ -23,12 +23,15 @@ class PersistentViewBot(commands.Bot):
   def __init__(self):
     intents = discord.Intents.all()
     intents.message_content = True
+    intents.members = True
+    intents.presences = True
     allowed_mentions = discord.AllowedMentions.all()
     allowed_mentions.everyone = True
     super().__init__(command_prefix=commands.when_mentioned_or('.'), intents=intents, allowed_mentions = allowed_mentions)
-    self.reaction_list = []
-    self.level_list = []
-    self.mod_channels = []
+    self.reaction_list = [] ##List of guilds with a reaction channel, so there's no need to query data if there's no reaction post.
+    self.level_list = [] ##List of guilds with enabled notifications.
+    self.mod_channels = [] ##List of [guild_id, channel_id] for moderation channels.
+    self.stalk_list = [] ##List of [user to notify, user to check] for the stalk command.
     
   async def setup_hook(self) -> None:
     # Register the persistent view for listening here.
@@ -37,7 +40,8 @@ class PersistentViewBot(commands.Bot):
     self.add_view(roles2())
     self.add_view(pronounButtons())
     
-  async def on_ready(self):
+  ## Syncs tree commands and initializes all necessary channel lists from MySQL
+  async def on_ready(self): 
     synced = await bot.tree.sync()
     con = mysql.connector.connect(user = USER, password = PASSWORD, 
                                   host = HOST, database = DATABASE)
@@ -51,6 +55,9 @@ class PersistentViewBot(commands.Bot):
     cursor.execute("select * from mod_channels")
     for i in cursor:
       self.mod_channels.append([int(i[0]), int(i[1])])
+    cursor.execute("select * from stalker_table")
+    for i in cursor:
+      self.stalk_list.append([int(i[1]), int(i[2]), int(i[3])])
     con.close()
     print(f'Logged in as {self.user} (ID: {self.user.id})')
     print(f"Slash Commands: {len(synced)}")
@@ -59,7 +66,69 @@ class PersistentViewBot(commands.Bot):
 
 bot = PersistentViewBot()
 
-##----------------------------------------------------------------- Commands ----------------------------------------------------------------------------------------
+#-------------------------------------------------------------Context Menu Commands---------------------------------------------------------
+
+##Can only be used after making a mod channel, send a message containing who reported the message, the author, the contents of the message and the time it was reported.
+@bot.tree.context_menu(name = "Report Message")
+async def report_message(interaction:discord.Interaction, message:discord.Message):
+  def search():
+    for i in bot.mod_channels:
+      if i[0] == interaction.guild_id:
+        return i[1]
+    return None
+  channel = bot.get_channel(search())
+  if channel != None:
+    tz = timezone('EST')
+    await channel.send(f"{interaction.user.display_name} reported {message.author.display_name}'s post at {str(datetime.now(tz))[:16]}: \"{message.content}\"")
+    await interaction.response.send_message(f"You have successfully reported {message.author.display_name}'s message.", ephemeral = True)
+  else:
+    await interaction.response.send_message("There is not a moderator channel set up in your server. Contact an admin to use /create_mod_channel to report messages.", ephemeral = True)
+
+#Allows users to receive notifications when someone comes online.
+@bot.tree.context_menu(name = "Stalk")
+async def track_user(interaction:discord.Interaction, user:discord.User):
+  await interaction.response.defer(ephemeral = True)
+  con = mysql.connector.connect(user = USER, database = DATABASE, 
+                               host = HOST, password = PASSWORD)
+  cursor = con.cursor()
+  query = f"insert into stalker_table values (\"{interaction.user.id}/{user.id}/{interaction.guild.id}\", {interaction.user.id}, {user.id}, {interaction.guild.id})"
+  try:
+    cursor.execute(query)
+    cursor.execute("commit")
+  except mysql.connector.errors.IntegrityError:
+    await interaction.followup.send("User is already being stalked.")
+    return
+  con.close()
+  bot.stalk_list.append([interaction.user.id, user.id, interaction.guild.id])
+  await interaction.followup.send("User is now being stalked. You creepy weirdo.")
+    
+@bot.tree.context_menu(name = "Stop Stalking")
+async def untrack_user(interaction:discord.Interaction, user:discord.User):
+  await interaction.response.defer(ephemeral = True)
+  bot.stalk_list.remove([interaction.user.id, user.id, interaction.guild.id])
+  con = mysql.connector.connect(user = USER, password = PASSWORD, 
+                               host = HOST, database = DATABASE)
+  cursor = con.cursor()
+  query = f"delete from stalker_table where unique_id = \"{interaction.user.id}/{user.id}/{interaction.guild.id}\""
+  cursor.execute(query)
+  cursor.execute("commit")
+  con.close()
+  await interaction.followup.send("User is no longer being stalked. Good, you pervert.")
+
+#Saves messages to MySQL that can be retrieved at any time.
+@bot.tree.context_menu(name = "Save This Message")
+async def savemessage(interaction:discord.Interaction, message:discord.Message):
+  await interaction.response.defer(ephemeral = True)
+  con = mysql.connector.connect(user = USER, password = PASSWORD, 
+                               host = HOST, database = DATABASE)
+  cursor = con.cursor()
+  cursor.execute(f"insert into saved_messages values ({message.id}, \"{message.author.display_name}\", \"{message.content}\", {message.guild.id}, {message.author.id}, {interaction.user.id})")
+  cursor.execute("commit")
+  cursor.close()
+  await interaction.followup.send("Message has been saved. Type /saved_messages to see your list of saved messages.")
+
+
+##-------------------------------------------------------------- Slash Commands ----------------------------------------------------------------------------------------
 
 @bot.tree.command(name = "create_poll", description = "Creates a poll for members of your server to vote on!")
 @app_commands.describe(title = "The title of your poll.")
@@ -75,49 +144,13 @@ async def poll(interaction:discord.Interaction, title:str, option_one:str, optio
     view = threePollButtons(title, option_one, option_two, option_three, interaction.user)
   await interaction.response.send_message(group_mention, embed = view.embed, view = view)
 
-
-@bot.tree.context_menu(name = "Report Message")
-async def report_message(interaction:discord.Interaction, message:discord.Message):
-  def search():
-    for i in bot.mod_channels:
-      if i[0] == interaction.guild_id:
-        return i[1]
-    return None
-  channel = bot.get_channel(search())
-  if channel != None:
-    tz = timezone('EST')
-    await channel.send(f"{interaction.user.display_name} reported {message.author.display_name}'s post at {str(datetime.now(tz))[:16]}: \"{message.content}\"")
-    await interaction.response.send_message(f"You have successfully reported {message.author.display_name}'s message.", ephemeral = True)
-  else:
-    await interaction.response.send_message("There is not a moderator channel set up in your server. Contact an admin to use /create_mod_channel to report messages.", ephemeral = True)
-@bot.tree.context_menu(name = "poke")
-async def testingcontext(interaction: discord.Interaction, user: discord.User):
-  await interaction.response.send_message(f"You poked {user.display_name}. They didn't notice.", ephemeral = True)
-
-@bot.tree.context_menu(name = "Save This Message")
-async def savemessage(interaction:discord.Interaction, message:discord.Message):
-  await interaction.response.defer(ephemeral = True)
-  con = mysql.connector.connect(user = USER, password = PASSWORD, 
-                               host = HOST, database = DATABASE)
-  cursor = con.cursor()
-  cursor.execute(f"insert into saved_messages values ({message.id}, \"{message.author.display_name}\", \"{message.content}\", {message.guild.id}, {message.author.id}, {interaction.user.id})")
-  cursor.execute("commit")
-  cursor.close()
-  await interaction.followup.send("Message has been saved. Type /saved_messages to see your list of saved messages.")
-
-def check(id): ##Used to check for a matching guild id in mod_channels for /create_mod_channel
-  for i in bot.mod_channels:
-    if i[1].__eq__(id) or i[0].__eq__(id):
-      return True
-  return False
-
 @bot.tree.command(name = "create_mod_channel", description = "Creates a channel that is only visible to all ranks at or above the bot, for user/message reports.")
 @app_commands.checks.has_permissions(administrator = True)
 @app_commands.describe(name = "Name of your channel.")
 async def mod_channel(interaction:discord.Interaction, name:str = "Moderator-Channel"):
   await interaction.response.defer(ephemeral = True)
   if not check(interaction.guild_id):
-    overwrites = {
+    overwrites = { ##Sets it so non admin roles cannot see the post upon creation.
       interaction.guild.default_role: discord.PermissionOverwrite(read_messages=False),
       interaction.guild.me: discord.PermissionOverwrite(read_messages=True)
     }
@@ -132,6 +165,28 @@ async def mod_channel(interaction:discord.Interaction, name:str = "Moderator-Cha
   else:
     await interaction.followup.send("A moderation channel already exists in this server. Please delete your existing channel to make a new one.")
 
+@bot.tree.command(name = "report_user", description = "Use this to report someone if you feel like you need a moderator to help.")
+@app_commands.describe(user = "User you'd like to report.")
+@app_commands.describe(reason = "Reason you're reporting this user.")
+@app_commands.describe(anonymous = "Optional: Whether you'd like to make the report anonymous.")
+async def report_user(interaction:discord.Interaction, user:discord.User, reason:str, anonymous:bool = False):
+  def search():
+    for i in bot.mod_channels:
+      if i[0] == interaction.guild_id:
+        return i[1]
+    return None
+  channel = bot.get_channel(search())
+  if channel != None:
+    tz = timezone('EST')
+    if not anonymous:
+      await channel.send(f"{interaction.user.display_name} reported {user.mention} at {str(datetime.now(tz))[:16]}. Reason: \"{reason}\"")
+    else:
+      await channel.send(f"An anonymous user reported {user.mention} at {str(datetime.now(tz))[:16]}. Reason: \"{reason}\"")
+    await interaction.response.send_message(f"You have successfully reported {user.display_name}'s message.", ephemeral = True)
+  else:
+    await interaction.response.send_message("There is not a moderator channel set up in your server. Contact an admin to use /create_mod_channel to report messages.", ephemeral = True)
+    
+#Displays the messages saved from MySQL, or shows an error if there are no saved messages.
 @bot.tree.command(name = "saved_messages", description = "Displays your list of saved messages.")
 async def saved_messages(interaction:discord.Interaction):
   await interaction.response.defer()
@@ -156,6 +211,7 @@ async def delete_my_saved(interaction:discord.Interaction):
   cursor.execute("commit")
   con.close()
   await interaction.followup.send("Messages have been deleted.")
+
 @bot.tree.command(name = "help", description = "Some helpful advice if you're having trouble setting up your server.")
 async def help_command(interaction:discord.Interaction):
   view = helpButtons()
@@ -178,7 +234,9 @@ async def remove_all(interaction:discord.Interaction):
   cursor.execute("commit")
   await update_post(interaction.guild_id)
   await interaction.followup.send(f"Roles have been deleted.")
-  
+
+#Sets up all the mandatory channels for using the bot. This includes a role channel, bot channel, and all gender/DM roles to allow the buttons to work.
+#Optional Boolean to set up a few game roles to start with.
 @bot.tree.command(name = "server_setup", description = "Use this to set up basic server roles, a reaction channel, and a bot channel.")
 @app_commands.describe(with_roles = "(True/False) Whether or not you'd like basic game roles added on setup (pronoun roles and DM roles are added either way).")
 @app_commands.checks.has_permissions(manage_roles = True, manage_channels = True)
@@ -213,7 +271,8 @@ async def setup(interaction:discord.Interaction, with_roles:bool = True):
     pass
   await interaction.followup.send("Server setup is complete.")
     
-
+#Generates an embed of a random Overwatch hero from overwatch.py.
+#Optional parameters specify which role they'd like to receive a hero for.
 @bot.tree.command(name = "random_hero", description = "Gives you a random Overwatch hero. Can specify what role.") 
 @app_commands.describe(role = "What role you'd like a random hero for.")
 @app_commands.choices(role = [discord.app_commands.Choice(name = "Tank", value = "tank"), discord.app_commands.Choice(name = "Damage", value = "damage"), discord.app_commands.Choice(name = "Support", value = "support")])
@@ -227,16 +286,17 @@ async def hero(interaction:discord.Interaction, role:discord.app_commands.Choice
   elif not hero == None:
     await interaction.response.send_message(embed = hero)      
 
+#Displays embed of server commands. Fairly obsolete due to how slash commands work as a concept.
 @bot.tree.command(name = "commands", description = "Displays a list of this bot's commands.")
 async def command(interaction:discord.Interaction):
   view = commandButtons()
   await interaction.response.send_message(f"{interaction.user.mention}", embed = view.embed_list[0], view = view)
 
-
+#Displays a leaderboard showing a ranking of members in the guild, according to how active they are in the guild.
 @bot.tree.command(name = "leaderboard", description = "Displays the leaderboard for this server.")
 async def leaderboard(interaction:discord.Interaction):
-  con = mysql.connector.connect(user = 'u82120_m5IEJEMcxY', password = 'weIKW@+gP3nSm+.zzHIT+C+x', 
-                             host = '78.108.218.47', database = 's82120_DiscordDatabase') 
+  con = mysql.connector.connect(user = USER, password = PASSWORD, 
+                             host = HOST, database = DATABASE) 
   query = (f"select * from userinfo where guild_id = {interaction.guild_id} order by points desc")
   cursor = con.cursor()
   cursor.execute(query)
@@ -244,29 +304,35 @@ async def leaderboard(interaction:discord.Interaction):
   con.close()
   await interaction.response.send_message(f"{interaction.user.mention}", embed = view.embed_list[0], view = view)
 
-
+#Sets the current channel as the channel to receive bot messages in. 
 @bot.tree.command(name = "set_bot_channel", description = "Sets this channel for level up messages.")
 @app_commands.checks.has_permissions(manage_channels = True)
 async def bot_channel(interaction:discord.Interaction):
   con = mysql.connector.connect(user = USER, password = PASSWORD, 
                                 host = HOST, database = DATABASE)
   cursor = con.cursor()
-  query = f"insert into bot_channels values (\"{interaction.guild_id}\", \"{interaction.channel_id}\")"
-  cursor.execute(query)
-  cursor.execute("commit")
+  try:
+    query = f"insert into bot_channels values (\"{interaction.guild_id}\", \"{interaction.channel_id}\")"
+    cursor.execute(query)
+    cursor.execute("commit")
+    await interaction.response.send_message("Channel has been made a bot channel!", ephemeral = True)
+  except mysql.connector.errors.IntegrityError:
+    await interaction.response.send_message("Channel is already a bot channel.", ephemeral = True)
   con.close()
-  await interaction.response.send_message("Channel has been made a bot channel!", ephemeral = True)
+  
 
-@bot.tree.command(name = "flip_off", description = "Flip off someone who deserves it (or maybe they don't, who cares they probably deserved it).")
-@app_commands.describe(user = "A mentioned user you don't like at the moment.")
-async def flip_off(interaction:discord.Interaction, user:discord.User, additional_message:str = ""):
+#Generates a random embed of a middle finger. 
+#Parameters include the user you'd like to mention (non-optional) and an additional message to go with it (optional)
+@bot.tree.context_menu(name = "Flip off")
+async def flip_off(interaction:discord.Interaction, user:discord.User):
   links = ["https://cdn.discordapp.com/attachments/1064811650298949642/1065682184033280051/Z.png", "https://cdn.discordapp.com/attachments/1064811650298949642/1065682244997501030/images.png", "https://cdn.discordapp.com/attachments/1064811650298949642/1065682456633671710/2Q.png", "https://cdn.discordapp.com/attachments/1064811650298949642/1065682604931694592/images.png", "https://cdn.discordapp.com/attachments/1064811650298949642/1065682701346164796/images.png", "https://cdn.discordapp.com/attachments/1064811650298949642/1065682815192145961/images.png", "https://cdn.discordapp.com/attachments/1064811650298949642/1065721204104769546/images.png", "https://cdn.discordapp.com/attachments/1064712978336841778/1065721748391202916/images.png", "https://cdn.discordapp.com/attachments/1064712978336841778/1065721797556834304/images.png", "https://cdn.discordapp.com/attachments/1064712978336841778/1065721845413838848/images.png", "https://cdn.discordapp.com/attachments/1064712978336841778/1065722323417710613/Z.png", "https://cdn.discordapp.com/attachments/1064811650298949642/1065721204104769546/images.png"]
   embed = discord.Embed()
   embed.set_image(url = links[random.randint(0, len(links) -1)])
-  if not additional_message.__eq__(""):
-    embed.set_footer(text = additional_message)
   await interaction.response.send_message(f"{user.mention}", embed = embed)
 
+#Adds a role to the server. Using this command to create a role will add it to the role post.
+#If the role already exists, it adds the role to the database without creating a new role in the server.
+#Parameters: The name of the role you're making, the emoji you'd like to associate with that role.
 @bot.tree.command(name = "add_role", description = "Adds a role to this server.")
 @app_commands.checks.has_permissions(manage_roles = True)
 @app_commands.describe(role = "Role to add")
@@ -289,6 +355,8 @@ async def add_role(interaction:discord.Interaction, role:str, emote:str):
     await interaction.followup.send(f"{role} already exists.")
   con.close()
 
+#Toggles the server notifications for users leveling up. If this is disabled, it'll override personal settings to have the notification unmutes.
+#Enabling this will not override a User's personal settings (see /mute and /unmute)
 @bot.tree.command(name = "toggle_notifications", description = "Enables/disables the bot to notify and mention users on this server. Automatically disabled.")
 @app_commands.checks.has_permissions(manage_channels = True)
 async def enable_levels(interaction:discord.Interaction):
@@ -348,8 +416,8 @@ async def post_roles(interaction:discord.Interaction):
 
 @bot.tree.command(name = "mute", description = "Prevents the bot from notifying you when you level up.")
 async def mute(interaction:discord.Interaction):
-  con = mysql.connector.connect(user = 'u82120_m5IEJEMcxY', password = 'weIKW@+gP3nSm+.zzHIT+C+x', 
-                             host = '78.108.218.47', database = 's82120_DiscordDatabase') 
+  con = mysql.connector.connect(user = USER, password = PASSWORD, 
+                             host = HOST, database = DATABASE) 
   cursor = con.cursor()
   query = f"update userinfo set notification = false where unique_id = \"{interaction.user.id}/{interaction.guild_id}\""
   cursor.execute(query)
@@ -452,21 +520,11 @@ async def invite(interaction:discord.Interaction, role:discord.Role, group:disco
     await interaction.response.send_message(f"{individual.mention}\nYou have been invited to grab the **{role.name}** role.", view = view)
   else:
     await interaction.response.send_message(f"You have been invited to grab the **{role.name}** role.", view = view)
+    
 @bot.tree.command(name = "challenge", description = "Challenge a friend to a game of rock paper scissors!")
 @app_commands.describe(user = "A mentioned user's tag")
 async def challenge(interaction:discord.Interaction, user:discord.User):
-  try:
-    member = bot.get_user(int(user[2:-1])) ##Checks to see if the argument is a properly formated user mention
-  except IndexError:
-    await interaction.response.send_message(f"{interaction.user.mention} that is not a valid user. Please include a mentioned user.")
-    return
-  except ValueError:
-    await interaction.response.send_message(f"{interaction.user.mention} that is not a valid user. Please include a mentioned user.")
-    return
-  if member == None:
-    await interaction.response.send_message(f"{interaction.user.mention} User is not found. Please include a valid mention or 'me'.")
-    return
-
+  member = user
   unique_id = ""
   p1_id = ""
   p2_id = ""
@@ -475,9 +533,9 @@ async def challenge(interaction:discord.Interaction, user:discord.User):
     
   view = Menu()
   view.p1_id = interaction.user.id
-  view.p2_id = int(user[2:-1])
-  await interaction.response.send_message(f"{interaction.user.mention} has challenged {user}!\n**Please choose your weapon**", view = view)
-  while not view.p1_status or not view.p2_status: ##Makes bot wait for button pushes from the two correct people
+  view.p2_id = user.id
+  await interaction.response.send_message(f"{interaction.user.mention} has challenged {user.mention}!\n**Please choose your weapon**", view = view)
+  while not view.p1_status or not view.p2_status: 
     msg = await bot.wait_for("interaction")
   
   if (interaction.user.id > member.id):
@@ -504,17 +562,17 @@ async def challenge(interaction:discord.Interaction, user:discord.User):
     list.append(points)
   if (len(list) == 0):   
     if p2_weapon.__eq__(p1_weapon):
-      query = f"insert into rpsrecord values (\"{unique_id}\",\"{p1_id}\", \"{p2_id}\",\"{bot.get_user(p1_id).display_name}\",\"{bot.get_user(p2_id).display_name}\", 0, 0, 1, \"{str(time)[2:-7]}\", \"{ctx.message.guild.id}\")"
+      query = f"insert into rpsrecord values (\"{unique_id}\",\"{p1_id}\", \"{p2_id}\",\"{bot.get_user(p1_id).display_name}\",\"{bot.get_user(p2_id).display_name}\", 0, 0, 1, \"{str(time)[2:-7]}\", \"{interaction.guild_id}\")"
       cursor.execute(query)
       cursor.execute("commit")
       await interaction.channel.send(f"{bot.get_user(p1_id).mention} used {p1_weapon} and {bot.get_user(p2_id).mention} used {p2_weapon}.\nIt's a tie!\nCurrent record: {bot.get_user(p1_id).display_name} - 0, {bot.get_user(p2_id).display_name} - 0, Ties - 1")
     elif ((p2_weapon.__eq__('paper') and p1_weapon.__eq__('rock')) or (p2_weapon.__eq__('rock') and p1_weapon.__eq__('scissors')) or ((p2_weapon.__eq__('scissors')) and (p1_weapon.__eq__('paper')))):
-      query = f"insert into rpsrecord values (\"{unique_id}\",\"{p1_id}\", \"{p2_id}\",\"{bot.get_user(p1_id).display_name}\",\"{bot.get_user(p2_id).display_name}\", 0, 1, 0, \"{str(time)[2:-7]}\", \"{ctx.message.guild.id}\")"
+      query = f"insert into rpsrecord values (\"{unique_id}\",\"{p1_id}\", \"{p2_id}\",\"{bot.get_user(p1_id).display_name}\",\"{bot.get_user(p2_id).display_name}\", 0, 1, 0, \"{str(time)[2:-7]}\", \"{interaction.guild_id}\")"
       cursor.execute(query)
       cursor.execute("commit")
       await interaction.channel.send(f"{bot.get_user(p1_id).mention} used {p1_weapon} and {bot.get_user(p2_id).mention} used {p2_weapon}.\n{bot.get_user(p2_id).display_name} wins!\nCurrent record: {bot.get_user(p1_id).display_name} - 0, {bot.get_user(p2_id).display_name} - 1, Ties - 0")
     elif ((p1_weapon.__eq__('paper') and p2_weapon.__eq__('rock')) or (p1_weapon.__eq__('rock') and p2_weapon.__eq__('scissors')) or ((p1_weapon.__eq__('scissors')) and (p2_weapon.__eq__('paper')))):
-      query = f"insert into rpsrecord values (\"{unique_id}\",\"{p1_id}\", \"{p2_id}\",\"{bot.get_user(p1_id).display_name}\",\"{bot.get_user(p2_id).display_name}\", 1, 0, 0, \"{str(time)[2:-7]}\", \"{ctx.message.guild.id}\")"
+      query = f"insert into rpsrecord values (\"{unique_id}\",\"{p1_id}\", \"{p2_id}\",\"{bot.get_user(p1_id).display_name}\",\"{bot.get_user(p2_id).display_name}\", 1, 0, 0, \"{str(time)[2:-7]}\", \"{interaction.guild_id}\")"
       cursor.execute(query)
       cursor.execute("commit")
       await interaction.channel.send(f"{bot.get_user(p1_id).mention} used {p1_weapon} and {bot.get_user(p2_id).mention} used {p2_weapon}.\n{bot.get_user(p1_id).display_name} wins!\nCurrent record: {bot.get_user(p1_id).display_name} - 1, {bot.get_user(p2_id).display_name} - 0, Ties - 0")
@@ -522,7 +580,7 @@ async def challenge(interaction:discord.Interaction, user:discord.User):
     newlist = list[0]
     list.pop(0)
     if p2_weapon.__eq__(p1_weapon):
-      query = f"update rpsrecord set player_1_display_name = \"{bot.get_user(p1_id).display_name}\", player_2_display_name = \"{bot.get_user(p2_id).display_name}\", last_time_played = \"{str(time)[2:-7]}\", ties = {newlist[7] + 1} where player_combined_id = {unique_id}"
+      query = f"update rpsrecord set player_1_display_name = \"{bot.get_user(p1_id).display_name}\", player_2_display_name = \"{bot.get_user(p2_id).display_name}\", last_time_played = \"{str(time)[2:-7]}\", ties = {newlist[7] + 1} where player_combined_id = \"{unique_id}\""
       cursor.execute(query)
       cursor.execute("commit")
       await interaction.channel.send(f"{bot.get_user(p1_id).mention} used {p1_weapon} and {bot.get_user(p2_id).mention} used {p2_weapon}.\nIt's a tie!\nCurrent record: {bot.get_user(p1_id).display_name} - {newlist[5]}, {bot.get_user(p2_id).display_name} - {newlist[6]}, Ties - {newlist[7] + 1}")
@@ -537,6 +595,13 @@ async def challenge(interaction:discord.Interaction, user:discord.User):
       cursor.execute("commit")
       await interaction.channel.send(f"{bot.get_user(p1_id).mention} used {p1_weapon} and {bot.get_user(p2_id).mention} used {p2_weapon}.\n{bot.get_user(p1_id).display_name} wins!\nCurrent record: {bot.get_user(p1_id).display_name} - {newlist[5] + 1}, {bot.get_user(p2_id).display_name} - {newlist[6]}, Ties - {newlist[7]}")
   con.close()
+
+@bot.tree.command(name = "hangman", description = "Play Hangman.")
+@app_commands.describe(content = "The word(s) or phrase you'd like others to guess.")
+@app_commands.describe(guesses = "The amount of guesses allowed for your word.")
+async def hangman(interaction:discord.Interaction, content:str, guesses:int = 6):
+  view = hangman_game.hangmanButtons(content, interaction.channel, guesses)
+  await interaction.response.send_message(f'{view.string}\n\nStrikes Left: {view.attempts}\nGuessed letters:', view = view)
 ##---------------------------------------------------------------------Functions-------------------------------------------------------------------------------------
 
 def factorial(num):
@@ -546,6 +611,12 @@ def factorial(num):
     return 1
   else:
     return num + factorial(num - 1)
+
+def check(id): ##Used to check for a matching guild id in mod_channels list
+  for i in bot.mod_channels:
+    if i[1].__eq__(id) or i[0].__eq__(id):
+      return True
+  return False
 
 def addSeconds(input:datetime, seconds:int):
   if (seconds < 0 or seconds > 60):
@@ -569,7 +640,21 @@ def addSeconds(input:datetime, seconds:int):
   else:
     check = input.replace(second=second + 5)
   return check
-    
+
+def addDays(input:datetime, days:int):
+  daysInMonths = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+  if (days < 0 or days > daysInMonths[input.month-1]):
+    raise ValueError("Not a valid input.")
+  day = input.day
+  if (day + days) > daysInMonth[input.month - 1]:
+    if (input.month + 1 > 12):
+      newdatetime = input.replace(year = input.year + 1, month = 1, day = (input.day + days)%daysInMonths[input.month - 1])
+    else:
+      newdatetime = input.replace(month = input.month + 1, day = (input.day + days)%daysInMonths[input.month - 1])
+  else:
+    newdatetime = input.replace(day = input.day + days)
+  return newdatetime    
+
 def toDateTime(input):
   return datetime.strptime(input, '%y-%m-%d %H:%M:%S')
 
@@ -612,14 +697,14 @@ async def addRole(guild, role, emote):
     con.close()
     return
   con.close()
-  if roletest == None:
+  if roletest == None: ##Creates the role if it does not exist, otherwise it just adds the role to the database.
     await guild.create_role(name = role)
 
 ##------------------------------------------------------------------Bot Events-------------------------------------------------------------------------------
 
 @bot.event
 async def on_message(message):
-  if message.author.id != bot.user.id and message.author.id != 1057542778604765225:
+  if message.author.id != bot.user.id and message.author.id != 1057542778604765225: ##Manages the level up database, adds points based on messages sent.
     con = mysql.connector.connect(user = USER, password = PASSWORD, 
                              host = HOST, database = DATABASE) 
     cursor = con.cursor()
@@ -665,14 +750,30 @@ async def on_message(message):
         cursor.execute(query)
         cursor.execute("commit")
   await bot.process_commands(message)
+
+@bot.event
+async def on_presence_update(before, after):
+  if before.status == discord.Status.offline: ##Used for the Stalk command.
+    if after.status == discord.Status.online:
+      list = []
+      for i in bot.stalk_list:
+        if i[1] == before.id and i[2] == before.guild.id:
+          list.append(i)
+      for i in list:
+        user = bot.get_user(i[0])
+        await user.send(f"{before.display_name} is now online.")
+#For me to see when an error occurs and when.        
 @bot.event
 async def on_command_error(ctx, error):
   print(f"{error} at {datetime.now()} in {ctx.channel}")
+
+
 @bot.event
 async def on_guild_join(guild):
-    general = discord.utils.find(lambda x: x.name == 'general',  guild.text_channels)
+    general = discord.utils.find(lambda x: x.name == 'general',  guild.text_channels) ##Sends a message to a general-chat channel when the bot joins a server
     if general and general.permissions_for(guild.me).send_messages:
         await general.send("Thank you for adding me to your server! To get started, type /server_setup. To enable level-up notifications, please type /toggle_level")    
+        
 @bot.event
 async def on_member_join(member):
   if member.guild.id in bot.level_list:
@@ -685,10 +786,11 @@ async def on_member_join(member):
     for x in cursor:
       list1.append(x)
     channel = bot.get_channel(int(list1[0][1]))
-    await channel.send(f"Welcome {member.mention}, make sure to grab some roles so people know you mean business :sunglasses:")    
+    await channel.send(f"Welcome {member.mention}, make sure to grab some roles so people know you mean business :sunglasses:")    ##Sends a message to new members, should the server not be muted
+    
 @bot.event
-async def on_guild_channel_delete(channel):
-  con = mysql.connector.connect(user = USER, password = PASSWORD, 
+async def on_guild_channel_delete(channel): 
+  con = mysql.connector.connect(user = USER, password = PASSWORD, ##Clears database when a channel containing a reaction post, bot channel, or mod channel is deleted. Keeps database tidy-ish.
                                host = HOST, database = DATABASE)
   cursor = con.cursor()
   cursor.execute(f"select * from bot_channels where channel_id = {channel.id}")
@@ -720,7 +822,7 @@ async def on_guild_channel_delete(channel):
 
 @bot.event
 async def on_raw_reaction_add(payload):
-  if payload.message_id in bot.reaction_list and payload.member.id != bot.user.id:
+  if payload.message_id in bot.reaction_list and payload.member.id != bot.user.id: ##Adds roles when a reaction is added to a reaction post.
     con = mysql.connector.connect(user = USER, password = PASSWORD, 
                                   host = HOST, database = DATABASE)
     cursor = con.cursor()
@@ -738,7 +840,7 @@ async def on_raw_reaction_add(payload):
     
 @bot.event
 async def on_raw_reaction_remove(payload):
-  if payload.message_id in bot.reaction_list:
+  if payload.message_id in bot.reaction_list: ##Removes roles when a reaction is removed from a reaction post.
     con = mysql.connector.connect(user = USER, password = PASSWORD, 
                                   host = HOST, database = DATABASE)
     cursor = con.cursor()
@@ -755,7 +857,7 @@ async def on_raw_reaction_remove(payload):
         
 @bot.event
 async def on_raw_message_delete(payload):
-  if payload.message_id in bot.reaction_list:
+  if payload.message_id in bot.reaction_list: ##Clears database and reaction_list when a reaction message is deleted to keep database tidy-ish.
     bot.reaction_list.remove(payload.message_id)
     con = mysql.connector.connect(user = USER, password = PASSWORD, 
                                   host = HOST, database = DATABASE)
@@ -951,7 +1053,7 @@ class savedMessagesButtons(discord.ui.View):
       self.cursor += 1
       await interaction.response.edit_message(embed = self.embed_list[self.cursor])
         
-class Buttons(discord.ui.View):
+class Buttons(discord.ui.View): #Currently only used for displaying the server leaderboard.
   def __init__(self, sqlcursor , title:str):
     super().__init__(timeout = None)
     self.embed_list = []
@@ -990,7 +1092,7 @@ class Buttons(discord.ui.View):
       await interaction.response.edit_message(embed = self.embed_list[self.cursor])
 
 
-class roles2(discord.ui.View):
+class roles2(discord.ui.View): #There is no roles1
   def __init__(self):
     super().__init__(timeout = None)
     self.value = 0
@@ -1321,5 +1423,6 @@ class threePollButtons(discord.ui.View):
       await interaction.response.send_message(f'{self.user.mention}\'s poll has been finished. Here are the results!', embed = self.embed)
     else:
       await interaction.response.defer()
+  
 #-----------------------------------------------------------------------------------------------
 bot.run(TOKEN)
