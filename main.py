@@ -18,6 +18,9 @@ DATABASE = ##MySQL database string
 
 TOKEN = ##Discord Client Token
 
+##ChatGPT Token
+OPENAI_KEY = ##OpenAI token
+openai.api_key = OPENAI_KEY
 ##-----------------------------------------------------------Bot Object-------------------------------------------------------------------------------
 class PersistentViewBot(commands.Bot):
   def __init__(self):
@@ -32,16 +35,15 @@ class PersistentViewBot(commands.Bot):
     self.level_list = [] ##List of guilds with enabled notifications.
     self.mod_channels = [] ##List of [guild_id, channel_id] for moderation channels.
     self.stalk_list = [] ##List of [user to notify, user to check] for the stalk command.
-    
+    self.color_list = [] ##List of color posts
   async def setup_hook(self) -> None:
     # Register the persistent view for listening here.
-    # Note that this does not send the view to any message.
-    # In order to do this you need to first send a message with the View, which is shown below.
     self.add_view(roles2())
     self.add_view(pronounButtons())
     
   ## Syncs tree commands and initializes all necessary channel lists from MySQL
   async def on_ready(self): 
+    await bot.add_cog(music_cog(self))
     synced = await bot.tree.sync()
     con = mysql.connector.connect(user = USER, password = PASSWORD, 
                                   host = HOST, database = DATABASE)
@@ -58,6 +60,9 @@ class PersistentViewBot(commands.Bot):
     cursor.execute("select * from stalker_table")
     for i in cursor:
       self.stalk_list.append([int(i[1]), int(i[2]), int(i[3])])
+    cursor.execute("select * from color_posts")
+    for i in cursor:
+      self.color_list.append([int(i[0]), int(i[1]), int(i[2])])
     con.close()
     print(f'Logged in as {self.user} (ID: {self.user.id})')
     print(f"Slash Commands: {len(synced)}")
@@ -67,7 +72,6 @@ class PersistentViewBot(commands.Bot):
 bot = PersistentViewBot()
 
 #-------------------------------------------------------------Context Menu Commands---------------------------------------------------------
-
 ##Can only be used after making a mod channel, send a message containing who reported the message, the author, the contents of the message and the time it was reported.
 @bot.tree.context_menu(name = "Report Message")
 async def report_message(interaction:discord.Interaction, message:discord.Message):
@@ -129,6 +133,83 @@ async def savemessage(interaction:discord.Interaction, message:discord.Message):
 
 
 ##-------------------------------------------------------------- Slash Commands ----------------------------------------------------------------------------------------
+@bot.tree.command(name = "fortnite_list", description = "Gives a list of the current fortnite shop, without the pictures")
+async def fniteShopList(interaction:discord.Interaction):
+  view = fortniteMenu(pictures = False)
+  await interaction.response.send_message(embed = view.embed_list[0], view = view)
+
+@bot.tree.command(name = "fortnite_shop", description = "Gives a full list of the current fortnite shop.")
+async def fniteshop(interaction:discord.Interaction):
+  view = fortniteMenu()
+  await interaction.response.send_message(embed = view.embed_list[0], view = view)
+        
+def getRarityColor(color:str):
+  if color.lower().__eq__("epic"):
+    return discord.Color.purple
+  elif color.lower().__eq__("rare"):
+    return discord.Color.blue
+  elif color.lower().__eq__("legendary"):
+    return discord.Color.gold
+  elif color.lower().__eq__("common"):
+    return discord.Color.green 
+
+@bot.tree.command(name = "view_ow_profile", description = "Allows you to view someone's Overwatch profile.")
+@app_commands.describe(name = "The name of the player. This is case sensitive, so type it in correctly.")
+@app_commands.describe(battletag = "The battlenet account id attached to the player you're looking up.")
+@app_commands.describe(console = "The console you would like stats for.")
+@app_commands.choices(console = [discord.app_commands.Choice(name = "PC", value = "pc"), discord.app_commands.Choice(name = "Console", value = "console")])
+async def viewProfile(interaction:discord.Interaction, name:str, battletag:int, console:discord.app_commands.Choice[str]):
+  await interaction.response.defer()
+  url = f"https://overfast-api.tekrop.fr/players/{name}-{battletag}/summary"
+  payload={}
+  response = requests.request("GET", url, data=payload)
+  response = response.json()
+  try:
+    if response['error'].__eq__("Player not found"):
+      await interaction.followup.send("Player not found. Make sure you have used the right battletag, and typed in the name exactly as it is.")
+  except KeyError:
+    if response['privacy'].__eq__('private'):
+      embed = discord.Embed(title = f"{name}#{battletag}", description = "This player's profile is private.")
+      embed.set_image(url = response['avatar'])
+      embed.set_footer(text = f"Endorsement Level: {response['endorsement']['level']}")
+    else:
+      str = f"Competitive Ranks:\n"
+      try:
+        if not (f"{response['competitive'][console.value]['tank']['division']} {response['competitive'][console.value]['tank']['tier']}").__eq__(""):
+          str += f"Tank: {response['competitive'][console.value]['tank']['division']} {response['competitive'][console.value]['tank']['tier']} | "
+      except TypeError:
+        str += "Tank: None | "
+      try:
+        if not (f"{response['competitive'][console.value]['damage']['division']} {response['competitive'][console.value]['damage']['tier']}").__eq__(""):
+          str += f"Damage: {response['competitive'][console.value]['damage']['division']} {response['competitive'][console.value]['damage']['tier']} | "
+      except TypeError:
+        str += "Damage: None | "
+      try:
+        if not (f"{response['competitive'][console.value]['support']['division']} {response['competitive'][console.value]['support']['tier']}").__eq__(""):
+          str += f"Support: {response['competitive'][console.value]['support']['division']} {response['competitive'][console.value]['support']['tier']}"
+      except TypeError:
+        str += "Support: None"  
+      embed = discord.Embed(title = f"{name}#{battletag}", description= str)
+      embed.set_image(url = response['avatar'])
+      embed.set_footer(text = f"Endorsement Level: {response['endorsement']['level']}")
+    await interaction.followup.send(embed = embed)
+    
+@bot.tree.command(name="ask_chatgpt", description="Ask chatGPT a question. They'll give you a good answer if possible.")
+@app_commands.describe(question="The question you'd like to ask chatGPT")
+async def askChatGPT(interaction: discord.Interaction, question: str):
+    await interaction.response.defer()
+    try:
+        response = openai.ChatCompletion.create(model = "gpt-3.5-turbo", 
+                                                messages=[{"role":"user", "content":question}])
+    except openai.error.InvalidRequestError:
+        await interaction.followup.send(
+            "Your prompt is too long. Try making it smaller, or take out any unnecessary spaces (if any)")
+        return
+    embed = discord.Embed(title = f"Prompt: {question}", 
+                          description = response.choices[0].message['content'], 
+                          color = discord.Color.blue())
+    embed.set_footer(text = "~~Maidenless ChatGPT Integration~~")
+    await interaction.followup.send(embed = embed)
 
 @bot.tree.command(name = "create_poll", description = "Creates a poll for members of your server to vote on!")
 @app_commands.describe(title = "The title of your poll.")
@@ -270,7 +351,118 @@ async def setup(interaction:discord.Interaction, with_roles:bool = True):
   except mysql.connector.errors.IntegrityError:
     pass
   await interaction.followup.send("Server setup is complete.")
-    
+
+@bot.tree.command(name = "add_color", description = "Adds a custom color of the specified value to the color roles. ")
+@app_commands.describe(color_code = "The value of the color you're adding, should be a 6 digit code.")
+@app_commands.describe(name = "The name of the color.")
+@app_commands.describe(emoji = "The emoji used for the reaction post. Do NOT use custom emojis.")
+async def add_color(interaction:discord.Interaction, color_code:str, name:str, emoji:str):
+  await interaction.response.defer(ephemeral = True)
+  if color_code[:2].__eq__("0x"):
+    color_code = color_code[2:]
+  elif color_code[:1].__eq__("#"):
+    color_code = color_code[1:]
+  if len(color_code) != 6:
+    await interaction.followup.send("That is not a valid color code. To look at color codes, check out https://htmlcolorcodes.com/color-picker/")
+    return
+  color_code = "0x"+color_code
+  role = await interaction.guild.create_role(name = name, colour = discord.Colour(int(color_code, 16)))
+  con = mysql.connector.connect(user = USER, password = PASSWORD, 
+                             host = HOST, database = DATABASE) 
+  cursor = con.cursor()
+  query = f"insert into color_list values (\"{name}/{interaction.guild.id}\", \"{name}\", \"{emoji}\", \"{interaction.guild.id}\")"
+  cursor.execute(query)
+  cursor.execute("commit")
+  await updateColorRoles(interaction.guild.id)
+  await interaction.followup.send("Color has been added.")
+  con.close()
+
+@bot.tree.command(name = "remove_color", description = "Removes a color role.")
+@app_commands.describe(color = "The color role that is to be deleted.")
+async def remove_color(interaction:discord.Interaction, color:discord.Role):
+  await interaction.response.defer(ephemeral = True)
+  con = mysql.connector.connect(user = USER, password = PASSWORD, 
+                             host = HOST, database = DATABASE) 
+  cursor = con.cursor()
+  cursor.execute(f"select * from color_list where guildid = \"{interaction.guild.id}\"")
+  list = []
+  for x in cursor:
+    list.append(x)
+  for x in list:
+    if color.name.__eq__(x[1]):
+      await color.delete()
+      cursor.execute(f"delete from color_list where uniqueid = \"{color.name}/{interaction.guild.id}\"")
+      cursor.execute("commit")
+      await updateColorRoles(interaction.guild.id)
+  con.close()
+  await interaction.followup.send("Color has been deleted.")
+
+@bot.tree.command(name = "create_color_post", description = "Creates a reaction post for color roles.")
+async def create_color_post(interaction:discord.Interaction):
+  await interaction.response.defer(ephemeral = True)
+  con = mysql.connector.connect(user = USER, password = PASSWORD, 
+                             host = HOST, database = DATABASE) 
+  cursor = con.cursor()
+  cursor.execute(f"select * from color_list where guildid = \"{interaction.guild.id}\" order by name asc")
+  list = []
+  string = f"Color Roles:"
+  for x in cursor:
+    list.append(x)
+  for x in list:
+    string += f"\n{x[1]} {x[2]}"
+  message = await interaction.channel.send(string)
+  for x in list:
+    await message.add_reaction(x[2])
+  cursor.execute(f"insert into color_posts values ({message.id}, {interaction.guild.id}, {message.channel.id})")
+  cursor.execute("commit")
+  bot.color_list.append([message.id, interaction.guild.id, message.channel.id])
+  await interaction.followup.send("Post has been created.")
+
+@bot.tree.command(name = "edit_color", description = "Edit one of the color roles.")
+@app_commands.describe(color_role = "The color that is being editted.")
+@app_commands.describe(name = "Change the name of the color role.")
+@app_commands.describe(color_role = "The 6 digit value for the color you'd like to change it to.")
+async def edit_color(interaction:discord.Interaction, color_role:discord.Role, name:str = "", color_code:str = ""):
+  if name.__eq__("") and color_code.__eq__(""):
+    await interaction.response.send_message(content = "You need to choose something to edit.", ephemeral = True)
+    return
+  if not color_code.__eq__(""):
+    if color_code[:2].__eq__("0x"):
+      color_code = color_code[2:]
+    elif color_code[:1].__eq__("#"):
+      color_code = color_code[1:]
+    if len(color_code) != 6:
+      await interaction.response.send_message(content = "That is not a valid color code. To look at color codes, check out https://htmlcolorcodes.com/color-picker/", ephemeral = True)
+      return
+      color_code = "0x"+color_code
+  await interaction.response.defer(ephemeral = True)
+  con = mysql.connector.connect(user = USER, password = PASSWORD, 
+                             host = HOST, database = DATABASE) 
+  cursor = con.cursor()
+  query = f"select * from color_list where name = \"{color_role.name}\" and guildid = \"{interaction.guild.id}\""
+  cursor.execute(query)
+  list = []
+  for x in cursor:
+    list.append(x)
+  if len(list) == 0:
+    await interaction.followup.send("That is not a valid color role.")
+    con.close()
+    return
+  if color_code.__eq__(""):
+    query = f"update color_list set name = \"{name}\", uniqueid = \"{name}/{interaction.guild.id}\" where uniqueid = \"{color_role.name}/{interaction.guild.id}\""
+    await color_role.edit(name = name)
+    cursor.execute(query)
+    cursor.execute("commit")
+  elif name.__eq__(""):
+    await color_role.edit(colour = discord.Colour(int(color_code, 16)))
+  else:
+    query = f"update color_list set name = \"{name}\", uniqueid = \"{name}/{interaction.guild.id}\" where uniqueid = \"{color_role.name}/{interaction.guild.id}\""
+    await color_role.edit(name = name, colour = discord.Colour(int(color_code, 16)))
+    cursor.execute(query)
+    cursor.execute("commit")
+  con.close()
+  await updateColorRoles(interaction.guild.id)
+  await interaction.followup.send("The role has been editted.")  
 #Generates an embed of a random Overwatch hero from overwatch.py.
 #Optional parameters specify which role they'd like to receive a hero for.
 @bot.tree.command(name = "random_hero", description = "Gives you a random Overwatch hero. Can specify what role.") 
@@ -304,6 +496,28 @@ async def leaderboard(interaction:discord.Interaction):
   con.close()
   await interaction.response.send_message(f"{interaction.user.mention}", embed = view.embed_list[0], view = view)
 
+#Retrieves information about a player regarding their leaderboard standing
+@bot.tree.command(name = "get_leaderboard_info", description = "Get the leaderboard information for a given user.")
+@app_commands.describe(user = "The user who's information you're trying to see.")
+async def getLeaderboardInfo(interaction:discord.Interaction, user:discord.User):
+  await interaction.response.defer()
+  con = mysql.connector.connect(user = USER, password = PASSWORD, 
+                             host = HOST, database = DATABASE)
+  cursor = con.cursor()
+  cursor.execute(f"select * from userinfo where guild_id = {interaction.guild_id} order by points desc")
+  num = -1
+  accumulator = 0
+  user_info = ""
+  for x in cursor:
+    if num == -1:
+      strings = x[0].split("/")
+      if int(strings[0]) == user.id:
+        num = accumulator
+        user_info = x
+      accumulator += 1
+  embed = discord.Embed(title = user_info[2], colour = discord.Colour.dark_green(), description = f"Leaderboard Rank: {num + 1}\n\nLevel: {user_info[5]}\n\nTotal Points: {user_info[4]}")  
+  await interaction.followup.send(f"{interaction.user.mention}", embed = embed)
+    
 #Sets the current channel as the channel to receive bot messages in. 
 @bot.tree.command(name = "set_bot_channel", description = "Sets this channel for level up messages.")
 @app_commands.checks.has_permissions(manage_channels = True)
@@ -578,7 +792,6 @@ async def challenge(interaction:discord.Interaction, user:discord.User):
       await interaction.channel.send(f"{bot.get_user(p1_id).mention} used {p1_weapon} and {bot.get_user(p2_id).mention} used {p2_weapon}.\n{bot.get_user(p1_id).display_name} wins!\nCurrent record: {bot.get_user(p1_id).display_name} - 1, {bot.get_user(p2_id).display_name} - 0, Ties - 0")
   else:
     newlist = list[0]
-    list.pop(0)
     if p2_weapon.__eq__(p1_weapon):
       query = f"update rpsrecord set player_1_display_name = \"{bot.get_user(p1_id).display_name}\", player_2_display_name = \"{bot.get_user(p2_id).display_name}\", last_time_played = \"{str(time)[2:-7]}\", ties = {newlist[7] + 1} where player_combined_id = \"{unique_id}\""
       cursor.execute(query)
@@ -628,18 +841,18 @@ def addSeconds(input:datetime, seconds:int):
       if (input.hour + 1 == 24):
         if (input.day + 1 > daysInMonths[input.month - 1]):
           if (input.month + 1 > 12):
-            check = input.replace(year = input.year + 1, month = 1, day = 1, hour = 0, minute = 0, second = (second + seconds)%60)
+            time = input.replace(year = input.year + 1, month = 1, day = 1, hour = 0, minute = 0, second = (second + seconds)%60)
           else:
-            check = input.replace(month = input.month + 1, day = 1, hour = 0, minute = 0, second = (second + seconds)%60)
+            time = input.replace(month = input.month + 1, day = 1, hour = 0, minute = 0, second = (second + seconds)%60)
         else:
-          check = input.replace(day = input.day + 1, hour = 0, minute = 0, second = (second + seconds)%60)
+          time = input.replace(day = input.day + 1, hour = 0, minute = 0, second = (second + seconds)%60)
       else: 
-        check = input.replace(hour = input.hour + 1, minute = 0, second = (second + seconds)%60)
+        time = input.replace(hour = input.hour + 1, minute = 0, second = (second + seconds)%60)
     else:
-      check = input.replace(minute = input.minute + 1, second = (second + seconds)%60)
+      time = input.replace(minute = input.minute + 1, second = (second + seconds)%60)
   else:
-    check = input.replace(second=second + 5)
-  return check
+    time = input.replace(second=second + 5)
+  return time
 
 def addDays(input:datetime, days:int):
   daysInMonths = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
@@ -668,6 +881,7 @@ async def update_post(guild_id):
   emojis = []
   for i in cursor:
     string += f"{i[1]}: {i[3]}\n"
+    print(i[3])
     emojis.append(i[3])
   cursor.execute(f"select * from reaction_messages where guild_id = {guild_id}")
   list = []
@@ -683,7 +897,31 @@ async def update_post(guild_id):
       if i.emoji not in emojis:
         await message.clear_reaction(i.emoji)
   
-
+async def updateColorRoles(guild_id):
+  con =  mysql.connector.connect(user = USER, password = PASSWORD,
+                                host = HOST, database = DATABASE)
+  cursor = con.cursor()
+  cursor.execute(f"select * from color_list where guildid = {guild_id} order by name asc")
+  string = "**React here to change your color**"
+  list = []
+  emojis = []
+  for x in cursor:
+    list.append(x)
+  if len(list) > 0:
+    for x in list:
+      string = string + (f"\n{x[1]} {x[2]}")
+      emojis.append(x[2])
+    for i in bot.color_list:
+      if i[1] == guild_id:
+        channel = bot.get_channel(i[2])
+        message = await channel.fetch_message(i[0])
+        await message.edit(content = string)
+        for x in emojis:
+          await message.add_reaction(x)
+        for i in message.reactions:
+          if i.emoji not in emojis:
+            await message.clear_reaction(i.emoji)
+        
 async def addRole(guild, role, emote):
   roletest = discord.utils.get(guild.roles, name = role)
   query = f"insert into guild_roles values (\"{guild.id}/{role}\",\"{role}\",\"{guild.id}\",\"{emote}\")"
@@ -701,6 +939,21 @@ async def addRole(guild, role, emote):
     await guild.create_role(name = role)
 
 ##------------------------------------------------------------------Bot Events-------------------------------------------------------------------------------
+@bot.event
+async def on_member_remove(payload):
+  con = mysql.connector.connect(user = USER, password = PASSWORD, 
+                             host = HOST, database = DATABASE) 
+  cursor = con.cursor()
+  cursor.execute(f"select * from bot_channels where guild_id = \"{payload.guild.id}\"") 
+  channel = ""
+  list1 = []
+  for x in cursor:
+    list1.append(x)
+  if len(list1) == 0:
+    return
+  else:
+    channel = bot.get_channel(int(list1[0][1]))
+  await channel.send(f"{payload.name} has left the server.") 
 
 @bot.event
 async def on_message(message):
@@ -726,8 +979,6 @@ async def on_message(message):
         channel = message.channel
       else:
         channel = bot.get_channel(int(list1[0][1]))
-      if message.guild.id in bot.level_list:
-        await channel.send(f"{message.author.mention} Congratulations! You've reached level 1!")
     elif toDateTime(list[0][1]) <= datetime.now():
       point = list[0][4] + 1
       if (point) == (factorial(list[0][5]) * 2) + 2:
@@ -818,6 +1069,11 @@ async def on_guild_channel_delete(channel):
     for x in bot.mod_channels:
       if x[1].__eq__(channel.id):
         bot.mod_channels.remove(x)
+  for x in bot.color_list:
+    if channel.id == x[2]:
+      cursor.execute(f"delete from color_posts where channelid = {channel.id}")
+      cursor.execute("commit")
+      bot.color_list.remove(x)
   con.close()
 
 @bot.event
@@ -836,8 +1092,26 @@ async def on_raw_reaction_add(payload):
       if payload.emoji.name.__eq__(i[3]):
         role = discord.utils.get(guild.roles, name = i[1])
         await payload.member.add_roles(role)
-
-    
+  else:
+    for x in bot.color_list:
+      if x[0] == payload.message_id and payload.member.id != bot.user.id:
+        con = mysql.connector.connect(user = USER, password = PASSWORD, 
+                                  host = HOST, database = DATABASE)
+        cursor = con.cursor()
+        query = f"select * from color_list where guildid = \"{payload.guild_id}\" and emoji = \"{payload.emoji.name}\""
+        cursor.execute(query)
+        guild = bot.get_guild(payload.guild_id)
+        list2 = []
+        for x in cursor:
+          list2.append(x)
+        for i in list2:
+          for x in payload.member.roles:
+            if x.name.__eq__(i[1]):
+              await payload.member.remove_roles(x)
+        for i in list2:
+          if payload.emoji.name.__eq__(i[2]):
+            role = discord.utils.get(guild.roles, name = i[1])
+            await payload.member.add_roles(role)
 @bot.event
 async def on_raw_reaction_remove(payload):
   if payload.message_id in bot.reaction_list: ##Removes roles when a reaction is removed from a reaction post.
@@ -854,7 +1128,22 @@ async def on_raw_reaction_remove(payload):
       if payload.emoji.name.__eq__(i[3]):
         role = discord.utils.get(guild.roles, name = i[1])
         await guild.get_member(payload.user_id).remove_roles(role)
-        
+  else:
+    for x in bot.color_list:
+      if x[0] == payload.message_id:
+        con = mysql.connector.connect(user = USER, password = PASSWORD, 
+                                host = HOST, database = DATABASE)
+        cursor = con.cursor()
+        query = f"select * from color_list where guildid = \"{payload.guild_id}\" and emoji = \"{payload.emoji.name}\""
+        cursor.execute(query)
+        guild = bot.get_guild(payload.guild_id)
+        list2 = []
+        for x in cursor:
+          list2.append(x)
+        for i in list2:
+          if payload.emoji.name.__eq__(i[2]):
+            role = discord.utils.get(guild.roles, name = i[1])
+            await guild.get_member(payload.user_id).remove_roles(role)  
 @bot.event
 async def on_raw_message_delete(payload):
   if payload.message_id in bot.reaction_list: ##Clears database and reaction_list when a reaction message is deleted to keep database tidy-ish.
@@ -866,8 +1155,17 @@ async def on_raw_message_delete(payload):
     cursor.execute(query)
     cursor.execute("commit")
     con.close()
-    print("Message successfully removed.")
-##------------------------------------------------------------------------Button Objects--------------------------------------------------------------------------------------------------------
+  else:
+    for x in bot.color_list:
+      if payload.message_id == int(x[0]):
+        con = mysql.connector.connect(user = USER, password = PASSWORD, 
+                                  host = HOST, database = DATABASE)
+        cursor = con.cursor()
+        cursor.execute(f"delete from color_posts where messageid = {payload.message_id}")
+        cursor.execute("commit")
+        con.close()
+      
+##------------------------------------------------------------------------Button Classes--------------------------------------------------------------------------------------------------------
 class roleInviteButton(discord.ui.View):
   def __init__(self, role:discord.Role):
     super().__init__(timeout = None)
@@ -916,6 +1214,60 @@ class pronounButtons(discord.ui.View):
       await interaction.user.add_roles(role)
       await interaction.response.defer()
 
+class fortniteMenu(discord.ui.View):
+  def __init__(self, pictures:bool=True):
+    super().__init__(timeout = None)
+    self.embed_list = []
+    self.hasPictures = pictures
+    self.updatePages()
+    self.cursor = 0
+    
+  def updatePages(self):
+    new_list = []
+    url = f"https://fortniteapi.io/v2/shop?lang=en&includeRenderData=false&date={datet.date.today()}"
+    payload={}
+    headers = {
+        'Authorization': 'a6c861a5-859cea8b-4139505e-e99feff6'
+        }
+    response = requests.request("GET", url, headers=headers, data=payload)
+    response = response.json()
+    if self.hasPictures:
+      for x in response['shop']:
+        embed = discord.Embed(title = "**Fortnite Item Shop**", description = x['displayName'])
+        embed.set_image(url = x['displayAssets'][0]['url'])
+        embed.set_footer(text = f"{x['price']['finalPrice']} VBucks")
+        new_list.append(embed)
+    else:
+      str = ""
+      accumulator = 0
+      for x in response['shop']:
+        str += f"{x['displayName']} - {x['price']['finalPrice']} Vbucks - {x['mainType']}\n"
+        accumulator+=1
+        if accumulator == 12:
+          embed = discord.Embed(title = "**Fortnite Item Shop**", description = str, color = discord.Color.green())
+          str = ""
+          accumulator = 0
+          new_list.append(embed)
+      if not str.__eq__(""):
+        embed = discord.Embed(title = "**Fortnite Item Shop**", description = str, color = discord.Color.green())
+        str = ""
+        new_list.append(embed)
+    self.embed_list = new_list
+  @discord.ui.button(label = "<--", style = discord.ButtonStyle.blurple, custom_id = "persistent_view:left2")
+  async def button1(self, interaction:discord.Interaction, button: discord.ui.Button): 
+    if self.cursor == 0:
+      await interaction.response.defer()
+    else:
+      self.cursor -= 1
+      await interaction.response.edit_message(embed = self.embed_list[self.cursor])
+  @discord.ui.button(label = "-->", style = discord.ButtonStyle.blurple, custom_id = "persistent_view:right2")
+  async def button2(self, interaction:discord.Interaction, button: discord.ui.Button):
+    if self.cursor == len(self.embed_list) - 1:
+      await interaction.response.defer()
+    else:
+      self.cursor += 1
+      await interaction.response.edit_message(embed = self.embed_list[self.cursor])
+
 class helpButtons(discord.ui.View):
   def __init__(self):
     super().__init__(timeout = None)
@@ -950,6 +1302,8 @@ class commandButtons(discord.ui.View):
   def __init__(self):
     super().__init__(timeout = None)
     self.cursor = 0
+    helpEmbed0 = helpEmbed = discord.Embed(title = "__Commands:__", colour = discord.Colour.blue())
+    helpEmbed0.add_field(name = "_Music Commands_", value = "\n- .play (song): Adds the bot to whatever channel you're in, if it's not already in a channel, and adds your song to the queue.\n- .pause: Pauses the song you're currently on.\n- .resume: Resumes the song that was paused (can also use .pause for the same effect)\n- .skip: Skips to the next song in the queue.\n- .queue: Displays the current queue.\n- .clear: Clears the queue.\n- .leave: Force the bot to leave the queue.")
     helpEmbed = discord.Embed(title = "__Commands:__", colour = discord.Colour.blue())
     helpEmbed.add_field(name = '_Game Commands_', value = '\n- /hero (role): Selects random hero, of the role if there is one specified. (Overwatch)\n\n- /map (size): Selects a random map. Will select from a specified size if one is specified (Phasmophobia)\n\n- /agent (role): Selects random agent, of the specified role if there is one.\n\n- /roll: Rolls a specified number of #-sided dice.\n\n- /challenge (User Mention) Challenges the mentioned user to trial by combat'.format())
     helpEmbed.set_footer(text = '~~Maidenless Commands~~')
@@ -959,7 +1313,7 @@ class commandButtons(discord.ui.View):
     helpEmbed3 = discord.Embed(title = "__Commands:__", colour = discord.Colour.blue())
     helpEmbed3.add_field(name = "_Administrator Commands_", value = "\n- /post_roles: Creates a post for users to get roles from. Please only have one role post in a server at a time.\n\n- /add_role: Adds a role to the server.\n\n- /remove_role: Removes a role that was previously added with add_role (manually deleting the role won't work).\n\n- /remove_all_roles: Removes all roles added with /add_role.\n\n- /set_bot_channel: sets the current channel as the channel for level up notifications to funnel through.")
     helpEmbed3.set_footer(text = "~~Maidenless Commands~~")
-    self.embed_list = [helpEmbed, helpEmbed2, helpEmbed3]
+    self.embed_list = [helpEmbed0, helpEmbed, helpEmbed2, helpEmbed3]
   @discord.ui.button(label = "<--", style = discord.ButtonStyle.blurple, custom_id = "persistent_view:left2")
   async def button1(self, interaction:discord.Interaction, button: discord.ui.Button): 
     if self.cursor == 0:
@@ -1426,3 +1780,4 @@ class threePollButtons(discord.ui.View):
   
 #-----------------------------------------------------------------------------------------------
 bot.run(TOKEN)
+
