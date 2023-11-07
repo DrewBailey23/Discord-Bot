@@ -1,5 +1,6 @@
 import random
 import discord
+import datetime as datet
 from datetime import datetime
 from datetime import date
 from discord.ext import commands
@@ -8,8 +9,13 @@ import pageList
 import phasmo
 import overwatch
 import valorant
+import hangman_game
 import mysql.connector
+import openai
 from pytz import timezone
+import requests
+import time
+from music_cog_buttons import music_cog
 
 USER = ##MySQL User string
 PASSWORD = ##MySQL password string
